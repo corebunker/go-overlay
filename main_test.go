@@ -959,3 +959,469 @@ func TestCommandTypeConstants(t *testing.T) {
 		t.Errorf("CmdGetStatus = %v, want get_status", CmdGetStatus)
 	}
 }
+
+// =============================================================================
+// Tests for new features: Health Check, Restart Policy, Environment Variables
+// =============================================================================
+
+// Test loadEnvFile
+func TestLoadEnvFile(t *testing.T) {
+	// Create a temp env file
+	tmpDir := t.TempDir()
+	envFile := tmpDir + "/test.env"
+
+	content := `# Comment line
+KEY1=value1
+KEY2=value2
+KEY3="quoted value"
+KEY4='single quoted'
+
+# Empty line above
+DEBUG=true
+`
+	err := os.WriteFile(envFile, []byte(content), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create test env file: %v", err)
+	}
+
+	env, err := loadEnvFile(envFile)
+	if err != nil {
+		t.Errorf("loadEnvFile() error = %v", err)
+	}
+
+	tests := []struct {
+		key      string
+		expected string
+	}{
+		{"KEY1", "value1"},
+		{"KEY2", "value2"},
+		{"KEY3", "quoted value"},
+		{"KEY4", "single quoted"},
+		{"DEBUG", "true"},
+	}
+
+	for _, tt := range tests {
+		if got := env[tt.key]; got != tt.expected {
+			t.Errorf("env[%s] = %v, want %v", tt.key, got, tt.expected)
+		}
+	}
+}
+
+// Test loadEnvFile with non-existent file
+func TestLoadEnvFileNotFound(t *testing.T) {
+	_, err := loadEnvFile("/non/existent/file.env")
+	if err == nil {
+		t.Error("Expected error for non-existent file")
+	}
+}
+
+// Test buildServiceEnv
+func TestBuildServiceEnv(t *testing.T) {
+	service := Service{
+		Name:    "test-service",
+		Command: "/bin/echo",
+		Env: map[string]string{
+			"MY_VAR":   "my_value",
+			"MY_VAR_2": "my_value_2",
+		},
+	}
+
+	env := buildServiceEnv(service)
+
+	// Check that our custom vars are present
+	found := false
+	for _, e := range env {
+		if strings.HasPrefix(e, "MY_VAR=") {
+			found = true
+			if e != "MY_VAR=my_value" {
+				t.Errorf("MY_VAR = %v, want MY_VAR=my_value", e)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("MY_VAR not found in environment")
+	}
+}
+
+// Test validateHealthCheck
+func TestValidateHealthCheck(t *testing.T) {
+	tests := []struct {
+		name      string
+		service   Service
+		shouldErr bool
+	}{
+		{
+			name: "Valid HTTP health check",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				HealthCheck: &HealthCheckConfig{
+					Endpoint: "http://localhost:8080/health",
+					Interval: 30,
+					Retries:  3,
+				},
+			},
+			shouldErr: false,
+		},
+		{
+			name: "Valid HTTPS health check",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				HealthCheck: &HealthCheckConfig{
+					Endpoint: "https://localhost:8443/health",
+				},
+			},
+			shouldErr: false,
+		},
+		{
+			name: "Invalid endpoint - no protocol",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				HealthCheck: &HealthCheckConfig{
+					Endpoint: "localhost:8080/health",
+				},
+			},
+			shouldErr: true,
+		},
+		{
+			name: "Valid command health check",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				HealthCheck: &HealthCheckConfig{
+					Command: "curl -sf http://localhost:8080/health",
+				},
+			},
+			shouldErr: false,
+		},
+		{
+			name: "No health check",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+			},
+			shouldErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateHealthCheck(&tt.service)
+			if tt.shouldErr && len(errs) == 0 {
+				t.Error("Expected errors but got none")
+			}
+			if !tt.shouldErr && len(errs) > 0 {
+				t.Errorf("Expected no errors but got: %v", errs)
+			}
+		})
+	}
+}
+
+// Test validateRestartPolicy
+func TestValidateRestartPolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		service   Service
+		shouldErr bool
+	}{
+		{
+			name: "Valid never policy",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				Restart: RestartNever,
+			},
+			shouldErr: false,
+		},
+		{
+			name: "Valid on-failure policy",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				Restart: RestartOnFailure,
+			},
+			shouldErr: false,
+		},
+		{
+			name: "Valid always policy",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				Restart: RestartAlways,
+			},
+			shouldErr: false,
+		},
+		{
+			name: "Invalid policy",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				Restart: "invalid-policy",
+			},
+			shouldErr: true,
+		},
+		{
+			name: "Empty policy (valid)",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				Restart: "",
+			},
+			shouldErr: false,
+		},
+		{
+			name: "Valid restart_delay and max_restarts",
+			service: Service{
+				Name:         "test",
+				Command:      "/bin/echo",
+				Restart:      RestartOnFailure,
+				RestartDelay: 5,
+				MaxRestarts:  3,
+			},
+			shouldErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateRestartPolicy(&tt.service)
+			if tt.shouldErr && len(errs) == 0 {
+				t.Error("Expected errors but got none")
+			}
+			if !tt.shouldErr && len(errs) > 0 {
+				t.Errorf("Expected no errors but got: %v", errs)
+			}
+		})
+	}
+}
+
+// Test validateEnvFile
+func TestValidateEnvFile(t *testing.T) {
+	// Create a temp file for the valid case
+	tmpDir := t.TempDir()
+	validEnvFile := tmpDir + "/valid.env"
+	os.WriteFile(validEnvFile, []byte("KEY=value"), 0644)
+
+	tests := []struct {
+		name      string
+		service   Service
+		shouldErr bool
+	}{
+		{
+			name: "Valid env_file",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				EnvFile: validEnvFile,
+			},
+			shouldErr: false,
+		},
+		{
+			name: "Non-existent env_file",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				EnvFile: "/non/existent/file.env",
+			},
+			shouldErr: true,
+		},
+		{
+			name: "No env_file",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+			},
+			shouldErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateEnvFile(&tt.service)
+			if tt.shouldErr && len(errs) == 0 {
+				t.Error("Expected errors but got none")
+			}
+			if !tt.shouldErr && len(errs) > 0 {
+				t.Errorf("Expected no errors but got: %v", errs)
+			}
+		})
+	}
+}
+
+// Test applyHealthCheckDefaults
+func TestApplyHealthCheckDefaults(t *testing.T) {
+	hc := &HealthCheckConfig{}
+	applyHealthCheckDefaults(hc)
+
+	if hc.Interval != 30 {
+		t.Errorf("Default Interval = %d, want 30", hc.Interval)
+	}
+	if hc.Retries != 3 {
+		t.Errorf("Default Retries = %d, want 3", hc.Retries)
+	}
+	if hc.Timeout != 5 {
+		t.Errorf("Default Timeout = %d, want 5", hc.Timeout)
+	}
+	if hc.StartDelay != 10 {
+		t.Errorf("Default StartDelay = %d, want 10", hc.StartDelay)
+	}
+
+	// Test that existing values are preserved
+	hc2 := &HealthCheckConfig{
+		Interval:   60,
+		Retries:    5,
+		Timeout:    10,
+		StartDelay: 20,
+	}
+	applyHealthCheckDefaults(hc2)
+
+	if hc2.Interval != 60 {
+		t.Errorf("Interval should be preserved: got %d, want 60", hc2.Interval)
+	}
+}
+
+// Test formatMaxRestarts
+func TestFormatMaxRestarts(t *testing.T) {
+	tests := []struct {
+		max      int
+		expected string
+	}{
+		{0, "∞"},
+		{1, "1"},
+		{5, "5"},
+		{100, "100"},
+	}
+
+	for _, tt := range tests {
+		if got := formatMaxRestarts(tt.max); got != tt.expected {
+			t.Errorf("formatMaxRestarts(%d) = %v, want %v", tt.max, got, tt.expected)
+		}
+	}
+}
+
+// Test RestartPolicy constants
+func TestRestartPolicyConstants(t *testing.T) {
+	if RestartNever != "never" {
+		t.Errorf("RestartNever = %v, want never", RestartNever)
+	}
+	if RestartOnFailure != "on-failure" {
+		t.Errorf("RestartOnFailure = %v, want on-failure", RestartOnFailure)
+	}
+	if RestartAlways != "always" {
+		t.Errorf("RestartAlways = %v, want always", RestartAlways)
+	}
+}
+
+// Test parseConfig with new fields
+func TestParseConfigNewFields(t *testing.T) {
+	tomlContent := `
+[[services]]
+name = "api"
+command = "/bin/echo"
+restart = "on-failure"
+restart_delay = 5
+max_restarts = 3
+
+[services.health_check]
+endpoint = "http://localhost:8080/health"
+interval = 30
+retries = 3
+
+[services.env]
+KEY1 = "value1"
+KEY2 = "value2"
+`
+	config, err := parseConfig(strings.NewReader(tomlContent))
+	if err != nil {
+		t.Fatalf("parseConfig() error = %v", err)
+	}
+
+	if len(config.Services) != 1 {
+		t.Fatalf("Expected 1 service, got %d", len(config.Services))
+	}
+
+	svc := config.Services[0]
+
+	// Check restart policy
+	if svc.Restart != RestartOnFailure {
+		t.Errorf("Restart = %v, want %v", svc.Restart, RestartOnFailure)
+	}
+	if svc.RestartDelay != 5 {
+		t.Errorf("RestartDelay = %v, want 5", svc.RestartDelay)
+	}
+	if svc.MaxRestarts != 3 {
+		t.Errorf("MaxRestarts = %v, want 3", svc.MaxRestarts)
+	}
+
+	// Check health check
+	if svc.HealthCheck == nil {
+		t.Fatal("HealthCheck should not be nil")
+	}
+	if svc.HealthCheck.Endpoint != "http://localhost:8080/health" {
+		t.Errorf("HealthCheck.Endpoint = %v, want http://localhost:8080/health", svc.HealthCheck.Endpoint)
+	}
+	if svc.HealthCheck.Interval != 30 {
+		t.Errorf("HealthCheck.Interval = %v, want 30", svc.HealthCheck.Interval)
+	}
+
+	// Check env vars
+	if len(svc.Env) != 2 {
+		t.Errorf("Env length = %v, want 2", len(svc.Env))
+	}
+	if svc.Env["KEY1"] != "value1" {
+		t.Errorf("Env[KEY1] = %v, want value1", svc.Env["KEY1"])
+	}
+}
+
+// Test checkCommandHealth
+func TestCheckCommandHealth(t *testing.T) {
+	// Test successful command
+	if !checkCommandHealth("exit 0", 5) {
+		t.Error("checkCommandHealth('exit 0') should return true")
+	}
+
+	// Test failing command
+	if checkCommandHealth("exit 1", 5) {
+		t.Error("checkCommandHealth('exit 1') should return false")
+	}
+}
+
+// Benchmark for buildServiceEnv
+func BenchmarkBuildServiceEnv(b *testing.B) {
+	service := Service{
+		Name:    "test-service",
+		Command: "/bin/echo",
+		Env: map[string]string{
+			"VAR1": "value1",
+			"VAR2": "value2",
+			"VAR3": "value3",
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buildServiceEnv(service)
+	}
+}
+
+// Benchmark for validateHealthCheck
+func BenchmarkValidateHealthCheck(b *testing.B) {
+	service := Service{
+		Name:    "test",
+		Command: "/bin/echo",
+		HealthCheck: &HealthCheckConfig{
+			Endpoint: "http://localhost:8080/health",
+			Interval: 30,
+			Retries:  3,
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		validateHealthCheck(&service)
+	}
+}
+

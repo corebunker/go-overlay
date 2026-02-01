@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -210,6 +211,32 @@ func (w *WaitAfterField) GetWaitTime(depName string) int {
 	return w.Global
 }
 
+// HealthCheckConfig defines health check settings for a service
+type HealthCheckConfig struct {
+	// HTTP endpoint to check (e.g., "http://localhost:8080/health")
+	Endpoint string `toml:"endpoint,omitempty"`
+	// Command to run for health check (exit 0 = healthy)
+	Command string `toml:"command,omitempty"`
+	// Interval between health checks in seconds (default: 30)
+	Interval int `toml:"interval,omitempty"`
+	// Number of consecutive failures before marking unhealthy (default: 3)
+	Retries int `toml:"retries,omitempty"`
+	// Timeout for each health check in seconds (default: 5)
+	Timeout int `toml:"timeout,omitempty"`
+	// Initial delay before first health check in seconds (default: 10)
+	StartDelay int `toml:"start_delay,omitempty"`
+}
+
+// RestartPolicy defines restart behavior for services
+type RestartPolicy string
+
+// Restart policy constants
+const (
+	RestartNever     RestartPolicy = "never"      // Never restart (default)
+	RestartOnFailure RestartPolicy = "on-failure" // Restart only on non-zero exit
+	RestartAlways    RestartPolicy = "always"     // Always restart when stopped
+)
+
 type Service struct {
 	Name      string          `toml:"name"`
 	Command   string          `toml:"command"`
@@ -222,6 +249,18 @@ type Service struct {
 	WaitAfter *WaitAfterField `toml:"wait_after,omitempty"`
 	Enabled   *bool           `toml:"enabled,omitempty"`  // Changed to pointer to detect if set
 	Required  bool            `toml:"required,omitempty"` // If true, failure stops whole system
+
+	// Health Check Configuration
+	HealthCheck *HealthCheckConfig `toml:"health_check,omitempty"`
+
+	// Restart Policy Configuration
+	Restart      RestartPolicy `toml:"restart,omitempty"`       // "never", "on-failure", "always"
+	RestartDelay int           `toml:"restart_delay,omitempty"` // Delay between restarts in seconds (default: 1)
+	MaxRestarts  int           `toml:"max_restarts,omitempty"`  // Max restart attempts (0 = unlimited)
+
+	// Environment Variables
+	Env     map[string]string `toml:"env,omitempty"`      // Inline environment variables
+	EnvFile string            `toml:"env_file,omitempty"` // Path to .env file
 }
 
 type Config struct {
@@ -231,17 +270,23 @@ type Config struct {
 
 // Internal raw representations to support flexible TOML decoding (go-toml/v2)
 type serviceRaw struct {
-	Name      string      `toml:"name"`
-	Command   string      `toml:"command"`
-	LogFile   string      `toml:"log_file,omitempty"`
-	PreScript string      `toml:"pre_script,omitempty"`
-	PosScript string      `toml:"pos_script,omitempty"`
-	User      string      `toml:"user,omitempty"`
-	Args      []string    `toml:"args"`
-	DependsOn interface{} `toml:"depends_on,omitempty"`
-	WaitAfter interface{} `toml:"wait_after,omitempty"`
-	Enabled   *bool       `toml:"enabled,omitempty"`
-	Required  bool        `toml:"required,omitempty"`
+	Name        string             `toml:"name"`
+	Command     string             `toml:"command"`
+	LogFile     string             `toml:"log_file,omitempty"`
+	PreScript   string             `toml:"pre_script,omitempty"`
+	PosScript   string             `toml:"pos_script,omitempty"`
+	User        string             `toml:"user,omitempty"`
+	Args        []string           `toml:"args"`
+	DependsOn   interface{}        `toml:"depends_on,omitempty"`
+	WaitAfter   interface{}        `toml:"wait_after,omitempty"`
+	Enabled     *bool              `toml:"enabled,omitempty"`
+	Required    bool               `toml:"required,omitempty"`
+	HealthCheck *HealthCheckConfig `toml:"health_check,omitempty"`
+	Restart     string             `toml:"restart,omitempty"`
+	RestartDelay int               `toml:"restart_delay,omitempty"`
+	MaxRestarts int                `toml:"max_restarts,omitempty"`
+	Env         map[string]string  `toml:"env,omitempty"`
+	EnvFile     string             `toml:"env_file,omitempty"`
 }
 
 type configRaw struct {
@@ -303,17 +348,23 @@ func parseConfig(r io.Reader) (Config, error) {
 		}
 
 		svc := Service{
-			Name:      sr.Name,
-			Command:   sr.Command,
-			Args:      sr.Args,
-			LogFile:   sr.LogFile,
-			PreScript: sr.PreScript,
-			PosScript: sr.PosScript,
-			DependsOn: deps,
-			WaitAfter: wa,
-			Enabled:   sr.Enabled,
-			User:      sr.User,
-			Required:  sr.Required,
+			Name:         sr.Name,
+			Command:      sr.Command,
+			Args:         sr.Args,
+			LogFile:      sr.LogFile,
+			PreScript:    sr.PreScript,
+			PosScript:    sr.PosScript,
+			DependsOn:    deps,
+			WaitAfter:    wa,
+			Enabled:      sr.Enabled,
+			User:         sr.User,
+			Required:     sr.Required,
+			HealthCheck:  sr.HealthCheck,
+			Restart:      RestartPolicy(sr.Restart),
+			RestartDelay: sr.RestartDelay,
+			MaxRestarts:  sr.MaxRestarts,
+			Env:          sr.Env,
+			EnvFile:      sr.EnvFile,
 		}
 		cfg.Services = append(cfg.Services, svc)
 	}
@@ -330,6 +381,15 @@ type ServiceProcess struct {
 	Cancel    context.CancelFunc
 	StateMu   sync.RWMutex
 	State     ServiceState
+
+	// Health tracking
+	HealthyAt     time.Time
+	FailureCount  int
+	HealthCancel  context.CancelFunc // Cancel function for health monitor goroutine
+
+	// Restart tracking
+	RestartCount int
+	LastRestart  time.Time
 }
 
 // SetState updates the service state with logging
@@ -937,7 +997,12 @@ func startServiceWithPTY(service Service, maxLength int, timeouts Timeouts) erro
 		cmd = exec.Command("su", "-s", shell, "-c", fullCommand, service.User)
 	}
 
-	cmd.Env = os.Environ()
+	// Build environment with service-specific env vars
+	cmd.Env = buildServiceEnv(service)
+	if len(service.Env) > 0 || service.EnvFile != "" {
+		_info(fmt.Sprintf("Service '%s' has custom environment variables configured",
+			colorize(ColorCyan, service.Name)))
+	}
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -963,6 +1028,9 @@ func startServiceWithPTY(service Service, maxLength int, timeouts Timeouts) erro
 
 	// Mark service as running once it's started
 	serviceProcess.SetState(ServiceStateRunning)
+
+	// Start health monitor if configured
+	startHealthMonitor(serviceProcess)
 
 	// Start log processing in background
 	go prefixLogs(ptmx, service.Name, maxLength)
@@ -1012,6 +1080,9 @@ func startServiceWithPTY(service Service, maxLength int, timeouts Timeouts) erro
 		}
 
 		// Clean up
+		if serviceProcess.HealthCancel != nil {
+			serviceProcess.HealthCancel()
+		}
 		if ptmx != nil {
 			_ = ptmx.Close()
 		}
@@ -1024,12 +1095,18 @@ func startServiceWithPTY(service Service, maxLength int, timeouts Timeouts) erro
 		return nil
 	default:
 		err := cmd.Wait()
-		// Service exited on its own, clean up
+		// Service exited on its own
+		if serviceProcess.HealthCancel != nil {
+			serviceProcess.HealthCancel()
+		}
 		serviceCancel()
 		if err != nil {
 			serviceProcess.SetError(err)
 		}
 		removeActiveService(service.Name)
+
+		// Handle restart policy
+		handleServiceExit(serviceProcess, err)
 		return err
 	}
 }
@@ -1158,6 +1235,312 @@ func _logWithColor(level, color string, a ...interface{}) {
 	fmt.Printf("%s %s\n", prefix, message)
 }
 
+// =============================================================================
+// Environment Variables Functions
+// =============================================================================
+
+// loadEnvFile loads environment variables from a .env file
+func loadEnvFile(filePath string) (map[string]string, error) {
+	env := make(map[string]string)
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Parse KEY=VALUE
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			// Remove quotes if present
+			value = strings.Trim(value, `"'`)
+			env[key] = value
+		}
+	}
+
+	return env, scanner.Err()
+}
+
+// buildServiceEnv builds the environment slice for a service
+func buildServiceEnv(service Service) []string {
+	// Start with system environment
+	env := os.Environ()
+	envMap := make(map[string]string)
+
+	// Convert to map for easier merging
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	// Load env_file if specified
+	if service.EnvFile != "" {
+		if fileEnv, err := loadEnvFile(service.EnvFile); err == nil {
+			for k, v := range fileEnv {
+				envMap[k] = v
+			}
+			_info(fmt.Sprintf("Loaded %d env vars from %s for service '%s'",
+				len(fileEnv), service.EnvFile, service.Name))
+		} else {
+			_warn(fmt.Sprintf("Could not load env_file '%s' for service '%s': %v",
+				service.EnvFile, service.Name, err))
+		}
+	}
+
+	// Override with inline env vars
+	for k, v := range service.Env {
+		envMap[k] = v
+	}
+
+	// Convert back to slice
+	result := make([]string, 0, len(envMap))
+	for k, v := range envMap {
+		result = append(result, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	return result
+}
+
+// =============================================================================
+// Health Check Functions
+// =============================================================================
+
+// applyHealthCheckDefaults sets default values for health check config
+func applyHealthCheckDefaults(hc *HealthCheckConfig) {
+	if hc.Interval == 0 {
+		hc.Interval = 30
+	}
+	if hc.Retries == 0 {
+		hc.Retries = 3
+	}
+	if hc.Timeout == 0 {
+		hc.Timeout = 5
+	}
+	if hc.StartDelay == 0 {
+		hc.StartDelay = 10
+	}
+}
+
+// startHealthMonitor starts a goroutine that monitors service health
+func startHealthMonitor(serviceProc *ServiceProcess) {
+	if serviceProc.Config.HealthCheck == nil {
+		return
+	}
+
+	config := *serviceProc.Config.HealthCheck
+	applyHealthCheckDefaults(&config)
+
+	// Create a cancellable context for the health monitor
+	healthCtx, healthCancel := context.WithCancel(shutdownCtx)
+	serviceProc.HealthCancel = healthCancel
+
+	go func() {
+		// Wait for initial delay
+		_info(fmt.Sprintf("Health monitor for '%s' will start in %ds",
+			serviceProc.Name, config.StartDelay))
+
+		select {
+		case <-time.After(time.Duration(config.StartDelay) * time.Second):
+		case <-healthCtx.Done():
+			return
+		}
+
+		_info(fmt.Sprintf("Health monitor started for '%s' (interval: %ds, retries: %d)",
+			serviceProc.Name, config.Interval, config.Retries))
+
+		ticker := time.NewTicker(time.Duration(config.Interval) * time.Second)
+		defer ticker.Stop()
+
+		failureCount := 0
+
+		for {
+			select {
+			case <-healthCtx.Done():
+				return
+			case <-ticker.C:
+				healthy := performHealthCheck(serviceProc, config)
+				if healthy {
+					if failureCount > 0 {
+						_success(fmt.Sprintf("Service '%s' is healthy again after %d failures",
+							serviceProc.Name, failureCount))
+					}
+					failureCount = 0
+					serviceProc.StateMu.Lock()
+					serviceProc.HealthyAt = time.Now()
+					serviceProc.FailureCount = 0
+					serviceProc.StateMu.Unlock()
+				} else {
+					failureCount++
+					serviceProc.StateMu.Lock()
+					serviceProc.FailureCount = failureCount
+					serviceProc.StateMu.Unlock()
+
+					_warn(fmt.Sprintf("Health check failed for '%s' (%d/%d)",
+						serviceProc.Name, failureCount, config.Retries))
+
+					if failureCount >= config.Retries {
+						handleUnhealthyService(serviceProc)
+						failureCount = 0
+					}
+				}
+			}
+		}
+	}()
+}
+
+// performHealthCheck executes the health check and returns true if healthy
+func performHealthCheck(serviceProc *ServiceProcess, config HealthCheckConfig) bool {
+	if config.Endpoint != "" {
+		return checkHTTPHealth(config.Endpoint, config.Timeout)
+	}
+	if config.Command != "" {
+		return checkCommandHealth(config.Command, config.Timeout)
+	}
+	return true // No health check configured means always healthy
+}
+
+// checkHTTPHealth performs an HTTP GET request to check health
+func checkHTTPHealth(endpoint string, timeout int) bool {
+	client := &http.Client{
+		Timeout: time.Duration(timeout) * time.Second,
+	}
+	resp, err := client.Get(endpoint)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 400
+}
+
+// checkCommandHealth executes a command and checks exit code
+func checkCommandHealth(command string, timeout int) bool {
+	ctx, cancel := context.WithTimeout(context.Background(),
+		time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	shell := "sh"
+	if isBashAvailable() {
+		shell = "bash"
+	}
+
+	cmd := exec.CommandContext(ctx, shell, "-c", command)
+	return cmd.Run() == nil
+}
+
+// handleUnhealthyService handles a service that has failed health checks
+func handleUnhealthyService(serviceProc *ServiceProcess) {
+	_error(fmt.Sprintf("Service '%s' is unhealthy after %d consecutive failures",
+		serviceProc.Name, serviceProc.FailureCount))
+
+	// If service has a restart policy, trigger restart
+	if serviceProc.Config.Restart == RestartAlways || serviceProc.Config.Restart == RestartOnFailure {
+		_info(fmt.Sprintf("Triggering restart for unhealthy service '%s'", serviceProc.Name))
+
+		// Cancel the current process
+		if serviceProc.Cancel != nil {
+			serviceProc.Cancel()
+		}
+	} else if serviceProc.Config.Required {
+		_error(fmt.Sprintf("[CRITICAL] Required service '%s' is unhealthy, initiating shutdown",
+			serviceProc.Name))
+		gracefulShutdown()
+	}
+}
+
+// =============================================================================
+// Restart Policy Functions
+// =============================================================================
+
+// handleServiceExit handles service exit with restart policy
+func handleServiceExit(serviceProc *ServiceProcess, exitErr error) {
+	policy := serviceProc.Config.Restart
+
+	// Determine if we should restart
+	shouldRestart := false
+	switch policy {
+	case RestartAlways:
+		shouldRestart = true
+	case RestartOnFailure:
+		shouldRestart = exitErr != nil
+	case RestartNever, "":
+		shouldRestart = false
+	}
+
+	// Check max restarts limit
+	if serviceProc.Config.MaxRestarts > 0 &&
+		serviceProc.RestartCount >= serviceProc.Config.MaxRestarts {
+		_warn(fmt.Sprintf("Service '%s' reached max restarts (%d), not restarting",
+			serviceProc.Name, serviceProc.Config.MaxRestarts))
+		shouldRestart = false
+	}
+
+	if shouldRestart {
+		serviceProc.RestartCount++
+		delay := serviceProc.Config.RestartDelay
+		if delay == 0 {
+			delay = 1 // Default 1 second
+		}
+
+		_info(fmt.Sprintf("Restarting service '%s' in %ds (attempt %d/%s)",
+			serviceProc.Name, delay, serviceProc.RestartCount,
+			formatMaxRestarts(serviceProc.Config.MaxRestarts)))
+
+		// Schedule restart
+		time.AfterFunc(time.Duration(delay)*time.Second, func() {
+			restartServiceInternal(serviceProc)
+		})
+	} else if serviceProc.Config.Required && exitErr != nil {
+		// Required service failed without restart policy
+		_error(fmt.Sprintf("[CRITICAL] Required service '%s' exited with error, initiating shutdown",
+			serviceProc.Name))
+		gracefulShutdown()
+	}
+}
+
+// formatMaxRestarts formats the max restarts for display
+func formatMaxRestarts(max int) string {
+	if max == 0 {
+		return "∞"
+	}
+	return fmt.Sprintf("%d", max)
+}
+
+// restartServiceInternal performs the actual service restart
+func restartServiceInternal(serviceProc *ServiceProcess) {
+	if globalConfig == nil {
+		_error(fmt.Sprintf("Cannot restart service '%s': no global config", serviceProc.Name))
+		return
+	}
+
+	// Check shutdown context
+	if shutdownCtx.Err() != nil {
+		_info(fmt.Sprintf("Skipping restart of '%s' - shutdown in progress", serviceProc.Name))
+		return
+	}
+
+	serviceProc.LastRestart = time.Now()
+	maxLength := getLongestServiceNameLength(globalConfig.Services)
+
+	_info(fmt.Sprintf("Starting restart of service '%s'", serviceProc.Name))
+
+	go func() {
+		if err := startServiceWithPTY(serviceProc.Config, maxLength, globalConfig.Timeouts); err != nil {
+			_error(fmt.Sprintf("Error restarting service '%s': %v", serviceProc.Name, err))
+		}
+	}()
+}
+
 func _printEnvVariables() {
 	_info("Function entry logged.")
 	_debug(true, "| ---------------- START - ENVIRONMENT VARS ---------------- |")
@@ -1243,6 +1626,9 @@ func validateService(service Service) ValidationErrors {
 	errors = append(errors, validateLogFile(&service)...)
 	errors = append(errors, validateWaitAfter(&service)...)
 	errors = append(errors, validateUser(&service)...)
+	errors = append(errors, validateHealthCheck(&service)...)
+	errors = append(errors, validateRestartPolicy(&service)...)
+	errors = append(errors, validateEnvFile(&service)...)
 
 	return errors
 }
@@ -1390,6 +1776,122 @@ func validateUser(service *Service) ValidationErrors {
 				Field:   "user",
 				Service: service.Name,
 				Message: fmt.Sprintf("user '%s' does not exist", service.User),
+			})
+		}
+	}
+
+	return errors
+}
+
+func validateHealthCheck(service *Service) ValidationErrors {
+	var errors ValidationErrors
+
+	if service.HealthCheck != nil {
+		hc := service.HealthCheck
+
+		// Validate endpoint URL format
+		if hc.Endpoint != "" {
+			if !strings.HasPrefix(hc.Endpoint, "http://") && !strings.HasPrefix(hc.Endpoint, "https://") {
+				errors = append(errors, ValidationError{
+					Field:   "health_check.endpoint",
+					Service: service.Name,
+					Message: "endpoint must start with http:// or https://",
+				})
+			}
+		}
+
+		// Validate interval
+		if hc.Interval < 0 {
+			errors = append(errors, ValidationError{
+				Field:   "health_check.interval",
+				Service: service.Name,
+				Message: "interval must be a positive number",
+			})
+		}
+
+		// Validate retries
+		if hc.Retries < 0 {
+			errors = append(errors, ValidationError{
+				Field:   "health_check.retries",
+				Service: service.Name,
+				Message: "retries must be a positive number",
+			})
+		}
+
+		// Validate timeout
+		if hc.Timeout < 0 {
+			errors = append(errors, ValidationError{
+				Field:   "health_check.timeout",
+				Service: service.Name,
+				Message: "timeout must be a positive number",
+			})
+		}
+
+		// Validate start_delay
+		if hc.StartDelay < 0 {
+			errors = append(errors, ValidationError{
+				Field:   "health_check.start_delay",
+				Service: service.Name,
+				Message: "start_delay must be a positive number",
+			})
+		}
+	}
+
+	return errors
+}
+
+func validateRestartPolicy(service *Service) ValidationErrors {
+	var errors ValidationErrors
+
+	// Validate restart policy value
+	if service.Restart != "" {
+		validPolicies := []RestartPolicy{RestartNever, RestartOnFailure, RestartAlways}
+		isValid := false
+		for _, p := range validPolicies {
+			if service.Restart == p {
+				isValid = true
+				break
+			}
+		}
+		if !isValid {
+			errors = append(errors, ValidationError{
+				Field:   "restart",
+				Service: service.Name,
+				Message: fmt.Sprintf("restart must be one of: never, on-failure, always (got: %s)", service.Restart),
+			})
+		}
+	}
+
+	// Validate restart_delay
+	if service.RestartDelay < 0 {
+		errors = append(errors, ValidationError{
+			Field:   "restart_delay",
+			Service: service.Name,
+			Message: "restart_delay must be a positive number",
+		})
+	}
+
+	// Validate max_restarts
+	if service.MaxRestarts < 0 {
+		errors = append(errors, ValidationError{
+			Field:   "max_restarts",
+			Service: service.Name,
+			Message: "max_restarts must be a positive number (0 = unlimited)",
+		})
+	}
+
+	return errors
+}
+
+func validateEnvFile(service *Service) ValidationErrors {
+	var errors ValidationErrors
+
+	if service.EnvFile != "" {
+		if _, err := os.Stat(service.EnvFile); os.IsNotExist(err) {
+			errors = append(errors, ValidationError{
+				Field:   "env_file",
+				Service: service.Name,
+				Message: fmt.Sprintf("env_file '%s' does not exist", service.EnvFile),
 			})
 		}
 	}

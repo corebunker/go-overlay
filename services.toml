@@ -8,6 +8,36 @@ global_shutdown_timeout = 30
 # Max time to wait for a dependency to start (seconds)
 dependency_wait_timeout = 300
 
+# =============================================================================
+# Example: API Service with Health Check and Restart Policy
+# =============================================================================
+[[services]]
+name = "api"
+command = "/bin/echo"
+args = ["API service placeholder"]
+enabled = false
+required = true
+
+# Health Check - HTTP endpoint
+[services.health_check]
+endpoint = "http://localhost:8080/health"
+interval = 30                             # Check every 30 seconds
+retries = 3                               # Mark unhealthy after 3 failures
+timeout = 5                               # Each check times out after 5 seconds
+start_delay = 10                          # Wait 10 seconds before first check
+
+# Restart Policy
+restart = "on-failure" # "never", "on-failure", "always"
+restart_delay = 5      # Wait 5 seconds between restarts
+max_restarts = 5       # Stop restarting after 5 attempts (0 = unlimited)
+
+# Environment Variables
+env = { API_PORT = "8080", LOG_LEVEL = "info" }
+# env_file = "/app/.env"  # Load additional vars from file
+
+# =============================================================================
+# Standard Services Configuration
+# =============================================================================
 [[services]]
 name = "nginx"
 command = "/usr/sbin/nginx"
@@ -33,10 +63,9 @@ args = ["--prefix", "/srv/nodejs", "run", "dev"]
 # log_file = "/var/log/node-app.log"
 enabled = true
 required = false
-# depends_on = ""
-# wait_after = 0
-# pre_script = "/scripts/node-pre.sh"
-# pos_script = "/scripts/node-pos.sh"
+# Restart on failure with default delay (1 second)
+restart = "on-failure"
+max_restarts = 3
 
 [[services]]
 name = "php-fpm"
@@ -59,17 +88,18 @@ args = [
   "--user=mysql",
   "--console",
   "--skip-name-resolve",
-  "--skip-networking=0"
+  "--skip-networking=0",
 ]
 # user = "mysql"
 # log_file = "/var/log/mysql/mysqld.log"
 enabled = true
 required = false
-# depends_on = ""
-# wait_after = 0
+# Always restart database service
+restart = "always"
+restart_delay = 3
 
 [[services]]
-name    = "fastapi"
+name = "fastapi"
 command = "uvicorn"
 args = [
   "main:app",
@@ -77,13 +107,20 @@ args = [
   "--host=0.0.0.0",
   "--port=8012",
   "--reload",
-  "--log-level=debug"
+  "--log-level=debug",
 ]
 # user = "www-data"
 # log_file = "/var/log/fastapi.log"
 enabled = true
 required = false
-# depends_on = "mariadb"
-# wait_after = 2
-# pre_script = "/scripts/fastapi-pre.sh"
-# pos_script = "/scripts/fastapi-pos.sh"
+
+# Health Check - Command based
+[services.health_check]
+command = "curl -sf http://localhost:8012/health || exit 1"
+interval = 15
+retries = 2
+timeout = 3
+start_delay = 5
+
+# Environment variables for FastAPI
+env = { PYTHONDONTWRITEBYTECODE = "1", PYTHONUNBUFFERED = "1" }
