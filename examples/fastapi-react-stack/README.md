@@ -45,6 +45,7 @@ command = "/usr/local/bin/alembic"
 args = ["upgrade", "head"]
 enabled = true
 required = false
+oneshot = true
 depends_on = []
 
 [[services]]

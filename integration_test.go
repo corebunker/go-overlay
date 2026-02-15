@@ -363,6 +363,7 @@ func TestIntegrationWaitAfterDependencies(t *testing.T) {
 	defer shutdownCancel()
 
 	startedServices := make(map[string]bool)
+	failedServices := make(map[string]bool)
 	var mu sync.Mutex
 
 	// Mark a service as started
@@ -373,7 +374,7 @@ func TestIntegrationWaitAfterDependencies(t *testing.T) {
 	// Test waiting for dependency with wait_after
 	done := make(chan bool)
 	go func() {
-		result := waitForDependency("dep-service", 1, &mu, startedServices, 10)
+		result := waitForDependency("dep-service", 1, &mu, startedServices, failedServices, 10)
 		done <- result
 	}()
 

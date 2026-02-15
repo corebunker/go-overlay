@@ -63,6 +63,8 @@ args = ["--prefix", "/srv/nodejs", "run", "dev"]
 # log_file = "/var/log/node-app.log"
 enabled = true
 required = false
+# For one-time jobs (e.g., migrations), set oneshot = true
+# oneshot = true
 # Restart on failure with default delay (1 second)
 restart = "on-failure"
 max_restarts = 3

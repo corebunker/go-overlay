@@ -26,7 +26,7 @@ import (
 
 var (
 	debugMode bool
-	version   = "v0.1.2"
+	version   = "v0.1.3"
 )
 
 // Socket path for inter-process communication
@@ -249,6 +249,7 @@ type Service struct {
 	WaitAfter *WaitAfterField `toml:"wait_after,omitempty"`
 	Enabled   *bool           `toml:"enabled,omitempty"`  // Changed to pointer to detect if set
 	Required  bool            `toml:"required,omitempty"` // If true, failure stops whole system
+	Oneshot   bool            `toml:"oneshot,omitempty"`  // If true, dependent services wait for successful completion
 
 	// Health Check Configuration
 	HealthCheck *HealthCheckConfig `toml:"health_check,omitempty"`
@@ -270,23 +271,24 @@ type Config struct {
 
 // Internal raw representations to support flexible TOML decoding (go-toml/v2)
 type serviceRaw struct {
-	Name        string             `toml:"name"`
-	Command     string             `toml:"command"`
-	LogFile     string             `toml:"log_file,omitempty"`
-	PreScript   string             `toml:"pre_script,omitempty"`
-	PosScript   string             `toml:"pos_script,omitempty"`
-	User        string             `toml:"user,omitempty"`
-	Args        []string           `toml:"args"`
-	DependsOn   interface{}        `toml:"depends_on,omitempty"`
-	WaitAfter   interface{}        `toml:"wait_after,omitempty"`
-	Enabled     *bool              `toml:"enabled,omitempty"`
-	Required    bool               `toml:"required,omitempty"`
-	HealthCheck *HealthCheckConfig `toml:"health_check,omitempty"`
-	Restart     string             `toml:"restart,omitempty"`
-	RestartDelay int               `toml:"restart_delay,omitempty"`
-	MaxRestarts int                `toml:"max_restarts,omitempty"`
-	Env         map[string]string  `toml:"env,omitempty"`
-	EnvFile     string             `toml:"env_file,omitempty"`
+	Name         string             `toml:"name"`
+	Command      string             `toml:"command"`
+	LogFile      string             `toml:"log_file,omitempty"`
+	PreScript    string             `toml:"pre_script,omitempty"`
+	PosScript    string             `toml:"pos_script,omitempty"`
+	User         string             `toml:"user,omitempty"`
+	Args         []string           `toml:"args"`
+	DependsOn    interface{}        `toml:"depends_on,omitempty"`
+	WaitAfter    interface{}        `toml:"wait_after,omitempty"`
+	Enabled      *bool              `toml:"enabled,omitempty"`
+	Required     bool               `toml:"required,omitempty"`
+	Oneshot      bool               `toml:"oneshot,omitempty"`
+	HealthCheck  *HealthCheckConfig `toml:"health_check,omitempty"`
+	Restart      string             `toml:"restart,omitempty"`
+	RestartDelay int                `toml:"restart_delay,omitempty"`
+	MaxRestarts  int                `toml:"max_restarts,omitempty"`
+	Env          map[string]string  `toml:"env,omitempty"`
+	EnvFile      string             `toml:"env_file,omitempty"`
 }
 
 type configRaw struct {
@@ -359,6 +361,7 @@ func parseConfig(r io.Reader) (Config, error) {
 			Enabled:      sr.Enabled,
 			User:         sr.User,
 			Required:     sr.Required,
+			Oneshot:      sr.Oneshot,
 			HealthCheck:  sr.HealthCheck,
 			Restart:      RestartPolicy(sr.Restart),
 			RestartDelay: sr.RestartDelay,
@@ -383,9 +386,9 @@ type ServiceProcess struct {
 	State     ServiceState
 
 	// Health tracking
-	HealthyAt     time.Time
-	FailureCount  int
-	HealthCancel  context.CancelFunc // Cancel function for health monitor goroutine
+	HealthyAt    time.Time
+	FailureCount int
+	HealthCancel context.CancelFunc // Cancel function for health monitor goroutine
 
 	// Restart tracking
 	RestartCount int
@@ -739,6 +742,7 @@ func loadAndValidateConfig(configFile string) (Config, error) {
 
 func startAllServices(config Config) error {
 	startedServices := make(map[string]bool)
+	failedServices := make(map[string]bool)
 	var mu sync.Mutex
 	maxLength := getLongestServiceNameLength(config.Services)
 
@@ -753,7 +757,7 @@ func startAllServices(config Config) error {
 		wg.Add(1)
 		go func(s *Service, timeouts Timeouts) {
 			defer wg.Done()
-			processService(s, &mu, startedServices, maxLength, timeouts)
+			processService(s, &mu, startedServices, failedServices, maxLength, timeouts)
 		}(service, config.Timeouts)
 	}
 
@@ -765,17 +769,22 @@ func startAllServices(config Config) error {
 	return nil
 }
 
-func processService(s *Service, mu *sync.Mutex, startedServices map[string]bool, maxLength int, timeouts Timeouts) {
+func processService(s *Service, mu *sync.Mutex, startedServices, failedServices map[string]bool, maxLength int, timeouts Timeouts) {
 	if shutdownCtx.Err() != nil {
 		_warn(fmt.Sprintf("Shutdown signal received, skipping service: %s", colorize(ColorCyan, s.Name)))
 		return
 	}
 
 	if !runPreScript(s) {
+		if s.Oneshot {
+			mu.Lock()
+			failedServices[s.Name] = true
+			mu.Unlock()
+		}
 		return
 	}
 
-	if !waitForServiceDependencies(s, mu, startedServices, timeouts) {
+	if !waitForServiceDependencies(s, mu, startedServices, failedServices, timeouts) {
 		return
 	}
 
@@ -785,15 +794,27 @@ func processService(s *Service, mu *sync.Mutex, startedServices map[string]bool,
 		serviceDone <- err
 	}()
 
-	mu.Lock()
-	startedServices[s.Name] = true
-	mu.Unlock()
+	if !s.Oneshot {
+		mu.Lock()
+		startedServices[s.Name] = true
+		mu.Unlock()
+	}
 
 	postScriptDone := make(chan struct{})
 	go runPostScript(s, timeouts.PostScript, postScriptDone)
 
 	if err := <-serviceDone; err != nil {
+		if s.Oneshot {
+			mu.Lock()
+			failedServices[s.Name] = true
+			mu.Unlock()
+		}
 		handleServiceError(s, err)
+	} else if s.Oneshot {
+		mu.Lock()
+		failedServices[s.Name] = false
+		startedServices[s.Name] = true
+		mu.Unlock()
 	}
 
 	<-postScriptDone
@@ -824,7 +845,7 @@ func runPreScript(s *Service) bool {
 	return true
 }
 
-func waitForServiceDependencies(s *Service, mu *sync.Mutex, startedServices map[string]bool, timeouts Timeouts) bool {
+func waitForServiceDependencies(s *Service, mu *sync.Mutex, startedServices, failedServices map[string]bool, timeouts Timeouts) bool {
 	if len(s.DependsOn) == 0 {
 		return true
 	}
@@ -838,7 +859,7 @@ func waitForServiceDependencies(s *Service, mu *sync.Mutex, startedServices map[
 		if s.WaitAfter != nil {
 			waitTime = s.WaitAfter.GetWaitTime(dep)
 		}
-		if !waitForDependency(dep, waitTime, mu, startedServices, timeouts.DependencyWait) {
+		if !waitForDependency(dep, waitTime, mu, startedServices, failedServices, timeouts.DependencyWait) {
 			_warn(fmt.Sprintf("Dependency wait canceled for service: %s", colorize(ColorCyan, s.Name)))
 			return false
 		}
@@ -903,7 +924,7 @@ func runScript(scriptPath string) error {
 	return cmd.Run()
 }
 
-func waitForDependency(depName string, waitAfter int, mu *sync.Mutex, startedServices map[string]bool, dependencyWait int) bool {
+func waitForDependency(depName string, waitAfter int, mu *sync.Mutex, startedServices, failedServices map[string]bool, dependencyWait int) bool {
 	maxWait := time.Duration(dependencyWait) * time.Second
 	start := time.Now()
 
@@ -924,7 +945,14 @@ func waitForDependency(depName string, waitAfter int, mu *sync.Mutex, startedSer
 
 		mu.Lock()
 		depStarted := startedServices[depName]
+		depFailed := failedServices[depName]
 		mu.Unlock()
+
+		if depFailed {
+			_error(fmt.Sprintf("Dependency '%s' failed before becoming ready",
+				colorize(ColorRed, depName)))
+			return false
+		}
 
 		if depStarted {
 			if waitAfter > 0 {
@@ -1878,6 +1906,16 @@ func validateRestartPolicy(service *Service) ValidationErrors {
 			Service: service.Name,
 			Message: "max_restarts must be a positive number (0 = unlimited)",
 		})
+	}
+
+	if service.Oneshot {
+		if service.Restart == RestartAlways || service.Restart == RestartOnFailure {
+			errors = append(errors, ValidationError{
+				Field:   "restart",
+				Service: service.Name,
+				Message: "oneshot services must use restart='never' (or omit restart)",
+			})
+		}
 	}
 
 	return errors

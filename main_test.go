@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -259,6 +261,19 @@ func TestWaitAfterFieldGetWaitTime(t *testing.T) {
 				t.Errorf("GetWaitTime() = %v, want %v", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestWaitForDependencyFailed(t *testing.T) {
+	shutdownCtx, shutdownCancel = context.WithCancel(context.Background())
+	defer shutdownCancel()
+
+	startedServices := map[string]bool{}
+	failedServices := map[string]bool{"db-migration": true}
+	var mu sync.Mutex
+
+	if waitForDependency("db-migration", 0, &mu, startedServices, failedServices, 2) {
+		t.Error("waitForDependency() should return false when dependency is marked as failed")
 	}
 }
 
@@ -753,6 +768,21 @@ command = "/bin/echo"
 			},
 		},
 		{
+			name: "Config with oneshot flag",
+			toml: `
+[[services]]
+name = "migration"
+command = "/bin/echo"
+oneshot = true
+`,
+			shouldErr: false,
+			validate: func(t *testing.T, c Config) {
+				if !c.Services[0].Oneshot {
+					t.Error("Expected oneshot = true")
+				}
+			},
+		},
+		{
 			name: "Config with depends_on as string",
 			toml: `
 [[services]]
@@ -1183,6 +1213,25 @@ func TestValidateRestartPolicy(t *testing.T) {
 			},
 			shouldErr: false,
 		},
+		{
+			name: "Valid oneshot with default restart",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				Oneshot: true,
+			},
+			shouldErr: false,
+		},
+		{
+			name: "Invalid oneshot with on-failure restart",
+			service: Service{
+				Name:    "test",
+				Command: "/bin/echo",
+				Oneshot: true,
+				Restart: RestartOnFailure,
+			},
+			shouldErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1424,4 +1473,3 @@ func BenchmarkValidateHealthCheck(b *testing.B) {
 		validateHealthCheck(&service)
 	}
 }
-

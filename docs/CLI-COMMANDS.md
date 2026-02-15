@@ -314,6 +314,7 @@ name = "worker"                # Used in: go-overlay restart worker
 command = "/app/worker"
 required = false               # Shown in: go-overlay list
 enabled = false                # Service won't start, won't appear in list
+oneshot = true                 # Optional for one-time jobs (e.g., migrations)
 ```
 
 ## Best Practices

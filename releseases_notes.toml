@@ -1,3 +1,14 @@
+[releases.v0-1-3]
+title = "Oneshot Services and Dependency Readiness"
+body = """
+- **NEW**: Added explicit `oneshot = true` service option for one-time jobs (migrations/init scripts)
+- **DEPENDENCIES**: Dependent services now wait for oneshot dependencies to complete successfully
+- **SAFETY**: Dependency waiting now detects failed dependencies and aborts dependents early
+- **VALIDATION**: `oneshot` services now enforce `restart = \"never\"` (or omitted restart)
+- **TESTING**: Added tests for oneshot parsing, dependency failure handling, and restart-policy validation
+- **DOCS**: Updated examples and configuration docs to include oneshot usage patterns
+"""
+
 [releases.v0-1-2]
 title = "Performance & Code Quality Improvements"
 body = """

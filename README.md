@@ -92,6 +92,7 @@ depends_on = "database"                     # Name of a dependency that must be 
 wait_after = 5                              # Extra delay (in seconds) after dependency is up, before starting this service. (Optional)
 enabled = true                              # If omitted, defaults to true. (Optional)
 required = false                            # If true, a failure of this service triggers a graceful shutdown of all services. (Optional, default: false)
+oneshot = false                             # If true, service is considered ready only after it exits successfully (ideal for migrations/jobs). (Optional, default: false)
 user = "www-data"                           # Run the service as a specific user (uses `su`). (Optional)
 ```
 

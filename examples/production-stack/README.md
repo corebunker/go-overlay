@@ -63,6 +63,7 @@ command = "/usr/local/bin/alembic"
 args = ["upgrade", "head"]
 enabled = true
 required = false
+oneshot = true
 depends_on = "postgres"
 wait_after = 3
 pre_script = """
