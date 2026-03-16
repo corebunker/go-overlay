@@ -125,7 +125,7 @@ RUN apt-get update && \
 RUN pip3 install fastapi uvicorn[standard] alembic psycopg2-binary sqlalchemy
 
 # Download go-overlay
-ADD https://github.com/srelabz/go-overlay/releases/latest/download/go-overlay /go-overlay
+ADD https://github.com/corebunker/go-overlay/releases/latest/download/go-overlay /go-overlay
 RUN chmod +x /go-overlay
 
 # Create directories

@@ -86,7 +86,7 @@ RUN apt-get update && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Download go-overlay
-ADD https://github.com/srelabz/go-overlay/releases/latest/download/go-overlay /go-overlay
+ADD https://github.com/corebunker/go-overlay/releases/latest/download/go-overlay /go-overlay
 RUN chmod +x /go-overlay
 
 # Copy Next.js standalone build
@@ -133,7 +133,7 @@ RUN apt-get update && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Download go-overlay
-ADD https://github.com/srelabz/go-overlay/releases/latest/download/go-overlay /go-overlay
+ADD https://github.com/corebunker/go-overlay/releases/latest/download/go-overlay /go-overlay
 RUN chmod +x /go-overlay
 
 # Copy Next.js build from builder

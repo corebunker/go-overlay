@@ -132,7 +132,41 @@ go-overlay install
 - Enables global CLI usage
 - Shows success/failure message
 
-### 6. Release Upload to Backblaze B2 (via invoke)
+### 6. Select Services via Environment Variables
+
+You can run different subsets of services without changing `services.toml`.
+
+#### Start only a subset
+
+```bash
+GO_OVERLAY_ONLY_SERVICES="backend,postgres" go-overlay
+```
+
+`GO_OVERLAY_ONLY_SERVICES` accepts comma/space separated service names.
+
+#### Per-service enable/disable
+
+Use normalized service tokens (uppercase; non-alphanumeric replaced by `_`):
+
+```bash
+# "fastapi-backend" => FASTAPI_BACKEND
+GO_OVERLAY_ENABLE_FASTAPI_BACKEND=true go-overlay
+
+# "caddy-frontend" => CADDY_FRONTEND
+GO_OVERLAY_DISABLE_CADDY_FRONTEND=true go-overlay
+```
+
+Supported boolean values: `1/0`, `true/false`, `yes/no`, `on/off`, `y/n`.
+
+Precedence:
+1. `enabled` in TOML
+2. `GO_OVERLAY_ONLY_SERVICES`
+3. `GO_OVERLAY_ENABLE_*`
+4. `GO_OVERLAY_DISABLE_*` (highest)
+
+If an enabled service depends on a disabled one, go-overlay returns a validation error before startup.
+
+### 7. Release Upload to Backblaze B2 (via invoke)
 
 Build and upload the release artifact to a Backblaze B2 S3-compatible bucket using the built-in tasks.
 
@@ -155,7 +189,7 @@ Notes:
 - The artifact name used is `go-overlay-linux-amd64` (created under `./release`).
 - You may optionally set `OBJECT_NAME` to override the object name in the bucket.
 
-### 7. Direct Download from Backblaze (Binary)
+### 8. Direct Download from Backblaze (Binary)
 
 You can download the latest uploaded binary directly from Backblaze B2 using the public URL:
 
@@ -209,7 +243,7 @@ Notes:
 FROM alpine:latest
 
 # Install go-overlay
-ADD https://github.com/srelabz/go-overlay/releases/latest/download/go-overlay /go-overlay
+ADD https://github.com/corebunker/go-overlay/releases/latest/download/go-overlay /go-overlay
 RUN chmod +x /go-overlay
 
 # Copy configuration

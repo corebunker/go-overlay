@@ -1,266 +1,187 @@
 # Go Overlay
 
-Go-based service orchestrator inspired by s6-overlay for running multiple services in containers. Provides graceful shutdown, dependency management, and CLI control.
-
-## Features
-
-- ✅ **Auto-Installation**: Automatically installs itself in PATH when running in daemon mode
-- ✅ **Graceful Shutdown**: Signal handling with configurable timeouts
-- ✅ **Service State Management**: Real-time state tracking and reporting
-- ✅ **Configuration Validation**: Comprehensive validation with circular dependency detection
-- ✅ **CLI Commands**: Easy service management via IPC
-- ✅ **Dependency Management**: Service startup ordering and waiting
-- ✅ **PTY Support**: Proper log streaming with service name prefixes
-- ✅ **User Switching**: Run services as different users
-- ✅ **Health Monitoring**: Service failure detection and system shutdown on critical services
+Go-based service supervisor for containers. Run multiple services with dependencies, health checks, restart policies, and graceful shutdown.
 
 ## Quick Start
 
-### Docker Usage
 ```dockerfile
-FROM alpine:latest
+FROM debian:bookworm-slim
 
-# Download go-overlay directly from GitHub releases
-ADD https://github.com/srelabz/go-overlay/releases/latest/download/go-overlay /go-overlay
+ADD https://github.com/corebunker/go-overlay/releases/latest/download/go-overlay /go-overlay
 RUN chmod +x /go-overlay
 
-# Copy your service configuration
 COPY services.toml /services.toml
-
-# Set as entrypoint
 ENTRYPOINT ["/go-overlay"]
 ```
 
-### Download and Install for developing new Stack
-```bash
-# Download latest release
-curl -L https://github.com/srelabz/go-overlay/releases/latest/download/go-overlay -o go-overlay
-chmod +x go-overlay
+```toml
+# services.toml
+[[services]]
+name = "app"
+command = "/app/server"
+required = true
+restart = "on-failure"
 
-# Auto-install in PATH (creates symlink at /go-overlay)
-sudo ./go-overlay install
-
-# Now you can use from anywhere:
-go-overlay list
-go-overlay status
-go-overlay restart nginx
+[services.health_check]
+endpoint = "http://localhost:8080/health"
+interval = 30
 ```
 
-## CLI Commands
+```bash
+docker build -t myapp .
+docker run myapp
+```
+
+## Features
+
+- **Dependencies**: `depends_on` + `wait_after` for startup ordering
+- **One-shot Jobs**: `oneshot = true` for migrations and init scripts
+- **Health Checks**: HTTP endpoint or command-based monitoring
+- **Restart Policies**: `never`, `on-failure`, `always` with max attempts
+- **Environment**: Inline `env`, `env_file`, runtime overrides via `GO_OVERLAY_ENABLE_*`
+- **Graceful Shutdown**: SIGTERM → wait → SIGKILL with configurable timeouts
+- **Pre/Post Scripts**: Run scripts before/after service lifecycle
+- **User Switching**: Run services as specific users
+- **CLI Management**: `list`, `status`, `restart` via IPC
+
+## CLI
 
 ```bash
-go-overlay                    # Start daemon
-go-overlay list               # List services
-go-overlay status             # Show status
-go-overlay restart <service>  # Restart service
-go-overlay install            # Manual installation
+go-overlay                    # Start supervisor (reads /services.toml)
+go-overlay list               # List services with status, PID, uptime
+go-overlay status             # Show system summary
+go-overlay restart <service>  # Restart a service
+go-overlay install            # Install CLI to /usr/local/bin/
+```
+
+## Configuration
+
+### Timeouts
+
+```toml
+[timeouts]
+post_script_timeout = 7        # pos_script max duration (default: 7)
+service_shutdown_timeout = 10   # SIGTERM → SIGKILL per service (default: 10)
+global_shutdown_timeout = 30    # Total shutdown timeout (default: 30)
+dependency_wait_timeout = 300   # Max wait for dependencies (default: 300)
+```
+
+### Service Fields
+
+```toml
+[[services]]
+name = "api"                            # Required. Unique identifier
+command = "/app/server"                 # Required. Executable path
+args = ["--port", "8080"]               # Command arguments
+enabled = true                          # Start this service (default: true)
+required = false                        # Shutdown system on failure (default: false)
+oneshot = false                         # Run once, ready after exit 0 (default: false)
+depends_on = ["db", "redis"]            # Wait for these services
+wait_after = 3                          # Seconds after deps ready (or map: { db = 5, redis = 2 })
+user = "appuser"                        # Run as this user
+pre_script = "/scripts/init.sh"         # Run before start
+pos_script = "/scripts/cleanup.sh"      # Run after start
+env = { KEY = "value" }                 # Inline env vars
+env_file = "/app/.env"                  # Load from .env file
+restart = "never"                       # never | on-failure | always
+restart_delay = 1                       # Seconds between restarts (default: 1)
+max_restarts = 0                        # 0 = unlimited (default: 0)
+
+[services.health_check]
+endpoint = "http://localhost:8080/health"  # HTTP check (2xx/3xx = healthy)
+command = "pg_isready"                     # OR command check (exit 0 = healthy)
+interval = 30                              # Seconds between checks (default: 30)
+retries = 3                                # Failures before unhealthy (default: 3)
+timeout = 5                                # Per-check timeout (default: 5)
+start_delay = 10                           # Delay before first check (default: 10)
 ```
 
 ## Service Selection via ENV
 
-You can choose which services start at runtime without editing `services.toml`.
-
-### 1) Start only selected services
-
-Use `GO_OVERLAY_ONLY_SERVICES` with a comma/space separated list:
-
 ```bash
-GO_OVERLAY_ONLY_SERVICES="backend,redis" go-overlay
+GO_OVERLAY_ONLY_SERVICES="backend,redis" go-overlay     # Only these services
+GO_OVERLAY_ENABLE_FASTAPI_BACKEND=true go-overlay        # Enable specific service
+GO_OVERLAY_DISABLE_CADDY_FRONTEND=true go-overlay        # Disable specific service
 ```
 
-### 2) Per-service overrides
+Service names are uppercased with non-alphanumeric chars replaced by `_`.
 
-Service names are normalized to uppercase tokens (non-alphanumeric chars become `_`).
-
-- `GO_OVERLAY_ENABLE_<SERVICE_TOKEN>=true|false`
-- `GO_OVERLAY_DISABLE_<SERVICE_TOKEN>=true|false`
-
-Examples:
-
-```bash
-# service name: "fastapi-backend" -> token: FASTAPI_BACKEND
-GO_OVERLAY_ENABLE_FASTAPI_BACKEND=true go-overlay
-
-# service name: "caddy-frontend" -> token: CADDY_FRONTEND
-GO_OVERLAY_DISABLE_CADDY_FRONTEND=true go-overlay
-```
-
-Precedence order:
-1. `enabled` from TOML
-2. `GO_OVERLAY_ONLY_SERVICES`
-3. `GO_OVERLAY_ENABLE_*`
-4. `GO_OVERLAY_DISABLE_*` (final override)
-
-If an enabled service depends on a disabled one, startup fails early with a validation error.
-
-## Configuration (`services.toml`)
-
-`go-overlay` uses a `services.toml` file to define the services it should manage.
-
-### Global Timeouts
-
-You can specify global timeouts in a `[timeouts]` block. These are the defaults implemented in the code:
+## Complete Example
 
 ```toml
 [timeouts]
-post_script_timeout = 7           # Time to wait after a service starts before running its `pos_script`.
-service_shutdown_timeout = 10     # Max time for a service to shut down gracefully before being killed.
-global_shutdown_timeout = 30      # Max time for the entire shutdown sequence to complete.
-dependency_wait_timeout = 300     # Max time to wait for a dependency to start.
-```
+service_shutdown_timeout = 10
+global_shutdown_timeout = 30
 
-### Service Definition
-
-Each service is defined in a `[[services]]` block. Supported fields below reflect the current implementation:
-
-```toml
 [[services]]
-name = "my-app"                             # A unique name for the service. Used for logging and CLI commands. (Required)
-command = "/usr/local/bin/my-app-binary"    # The command to execute. (Required)
-args = [
-  "--config",
-  "/etc/my-app.conf",
-  "--verbose"
-]                                           # A list of arguments to pass to the command. (Optional)
-# log_file = "/var/log/my-app.log"          # If provided, go-overlay will tail this file instead of attaching a PTY. (Optional)
-pre_script = "/scripts/setup-app.sh"        # A shell script to execute before starting the main command. (Optional)
-pos_script = "/scripts/notify-startup.sh"   # A shell script to execute after the service is considered started (runs after post_script_timeout). (Optional)
-depends_on = "database"                     # Name of a dependency that must be started before this service. (Optional)
-wait_after = 5                              # Extra delay (in seconds) after dependency is up, before starting this service. (Optional)
-enabled = true                              # If omitted, defaults to true. (Optional)
-required = false                            # If true, a failure of this service triggers a graceful shutdown of all services. (Optional, default: false)
-oneshot = false                             # If true, service is considered ready only after it exits successfully (ideal for migrations/jobs). (Optional, default: false)
-user = "www-data"                           # Run the service as a specific user (uses `su`). (Optional)
+name = "postgres"
+command = "postgres"
+args = ["-D", "/var/lib/postgresql/data"]
+required = true
+
+[[services]]
+name = "migrate"
+command = "/app/migrate"
+args = ["up"]
+depends_on = ["postgres"]
+wait_after = 3
+oneshot = true
+
+[[services]]
+name = "redis"
+command = "redis-server"
+required = true
+
+[[services]]
+name = "api"
+command = "/app/server"
+depends_on = ["postgres", "redis", "migrate"]
+wait_after = { postgres = 3, redis = 1 }
+required = true
+restart = "on-failure"
+max_restarts = 5
+env = { DATABASE_URL = "postgres://localhost/app" }
+
+[services.health_check]
+endpoint = "http://localhost:8080/health"
+interval = 30
+
+[[services]]
+name = "worker"
+command = "/app/worker"
+depends_on = ["redis"]
+restart = "always"
+
+[[services]]
+name = "caddy"
+command = "caddy"
+args = ["run", "--config", "/etc/caddy/Caddyfile"]
+depends_on = ["api"]
+wait_after = 3
+required = true
 ```
-
-## Auto-Installation
-
-When running in daemon mode, Go Overlay automatically:
-1. Detects if it's already in a PATH directory
-2. Creates a symlink at `/go-overlay`
-3. Enables CLI commands from any location
-
-## Service States
-
-- **PENDING**: Initial state, not yet started
-- **STARTING**: Currently being started
-- **RUNNING**: Successfully running
-- **STOPPING**: Gracefully stopping
-- **STOPPED**: Successfully stopped
-- **FAILED**: Failed to start or crashed
-
-## Documentation
-
-- **[Quick Install Guide](docs/QUICK-INSTALL.md)** - Installation methods and examples
-- **[CLI Commands Reference](docs/CLI-COMMANDS.md)** - Complete CLI command documentation
-- **[Graceful Shutdown Testing](docs/TEST-GRACEFUL-SHUTDOWN.md)** - Testing shutdown behavior
 
 ## Examples
 
-We provide production-ready examples with real stacks in the `examples/` directory:
+Production-ready stacks in `examples/`:
 
-### Modern Stacks
-
-- **[FastAPI + React + Caddy](./examples/fastapi-react-stack/README.md)**: Python stack with Alembic migrations, REST API and React frontend served by Caddy
-- **[Express.js + React + Caddy](./examples/express-react-stack/README.md)**: Full-stack Node.js with Prisma ORM, migrations and reverse proxy
-- **[Bun + React + Caddy](./examples/bun-react-stack/README.md)**: Performance Stack with Bun runtime (3x faster than Node.js), native TypeScript
-- **[Next.js Standalone](./examples/nextjs-standalone/README.md)**: Next.js in standalone mode with SSR/SSG and integrated API Routes
-
-### Complete Production Stack
-
-- **[Production Stack](./examples/production-stack/README.md)**: Complete stack with FastAPI + React + Redis + PostgreSQL, including:
-  - Distributed cache with Redis
-  - PostgreSQL database
-  - Automatic migrations with Alembic
-  - Health checks on all services
-  - Dependency validation with `pre_script`
-  - WebSocket support
-
-### Choose Your Stack
-
-| Stack | Ideal for |
-|-------|-----------|
-| **FastAPI + React** | REST APIs, Machine Learning, Python backend |
-| **Express + React** | JavaScript full-stack, rapid development |
-| **Bun + React** | Maximum performance, native TypeScript, reduce infrastructure costs |
-| **Next.js** | Important SEO, SSR/SSG, static + dynamic pages |
-| **Production Stack** | Production applications needing cache and database |
-
-All examples include:
-- ✅ Complete Dockerfiles
-- ✅ Dependency configuration
-- ✅ Automatic migrations
-- ✅ Reverse proxy with Caddy
-- ✅ Graceful shutdown
-- ✅ Step-by-step instructions
+| Stack | Use Case |
+|-------|----------|
+| [FastAPI + React + Caddy](./examples/fastapi-react-stack/) | Python REST APIs, ML backends |
+| [Express + React + Caddy](./examples/express-react-stack/) | JavaScript full-stack |
+| [Bun + React + Caddy](./examples/bun-react-stack/) | Max performance, native TypeScript |
+| [Next.js Standalone](./examples/nextjs-standalone/) | SSR/SSG, SEO-focused apps |
+| [Production Stack](./examples/production-stack/) | Full stack with PostgreSQL + Redis |
 
 ## Development
 
-This project uses `invoke` with `mise` for task management.
-
-### Quick Start Development
-
 ```bash
-# Install development tools
-invoke tools
-
-# Before committing (fast check - 20s)
-invoke precommit.precommit-fast
-
-# Before pushing to remote (complete check - 60s)
-invoke precommit.precommit
-
-# Just format code (2s)
-invoke quality.fmt
+mise exec -- invoke go.build       # Build binary
+mise exec -- invoke go.test        # Run tests
+mise exec -- invoke quality.fmt    # Format code
+mise exec -- invoke --list         # All tasks
 ```
-
-### Common Tasks
-
-```bash
-mise exec -- invoke --list         # Lists all available tasks
-mise exec -- invoke go.build       # Compiles the Go binary for your local OS
-mise exec -- invoke install        # Installs the binary (uninstall with the next line)
-mise exec -- invoke uninstall      # Uninstalls the installed binary
-mise exec -- invoke docker.build   # Builds the Docker image
-mise exec -- invoke go.test        # Runs the tests
-```
-
-## 🚀 CI/CD Pipeline
-
-This project has a complete CI/CD pipeline with automated tests, security checks, and a release process.
-
-### Quick Commands
-
-```bash
-mise run ci          # Full CI pipeline (tests + security + build)
-mise run ci:quick    # Quick pipeline (skips security scans)
-mise run cd          # CD Pipeline (release)
-mise run ci:test     # Tests only
-mise run ci:security # Security only
-```
-
-### Pipeline Structure
-
-```
-CI Pipeline:  Tests → Security → Build
-CD Pipeline:  CI Pipeline → Release → Upload
-```
-
-**Full documentation**: [docs/CI-CD-PIPELINE.md](docs/CI-CD-PIPELINE.md)
-
-### Automatic Execution
-
-- **CI**: Runs on all PRs and pushes to `main`
-- **CD**: Runs when creating `v*` tags or pushing to `main`
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT License - see LICENSE file.

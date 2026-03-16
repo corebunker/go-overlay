@@ -178,7 +178,7 @@ RUN curl -fsSL https://bun.sh/install | bash
 ENV PATH="/root/.bun/bin:${PATH}"
 
 # Download go-overlay
-ADD https://github.com/srelabz/go-overlay/releases/latest/download/go-overlay /go-overlay
+ADD https://github.com/corebunker/go-overlay/releases/latest/download/go-overlay /go-overlay
 RUN chmod +x /go-overlay
 
 # Create directories
