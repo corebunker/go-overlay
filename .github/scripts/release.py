@@ -110,7 +110,7 @@ class GitHubReleaser:
 
         build_cmd = (
             f"CGO_ENABLED=0 GOOS=linux go build -a "
-            f'-ldflags="-X main.version={tag}" -o {self.binary_name} .'
+            f'-ldflags="-X main.version={tag}" -o {self.binary_name} ./cmd/go-overlay'
         )
         self.run_command(build_cmd)
 
