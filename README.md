@@ -56,6 +56,43 @@ go-overlay restart <service>  # Restart service
 go-overlay install            # Manual installation
 ```
 
+## Service Selection via ENV
+
+You can choose which services start at runtime without editing `services.toml`.
+
+### 1) Start only selected services
+
+Use `GO_OVERLAY_ONLY_SERVICES` with a comma/space separated list:
+
+```bash
+GO_OVERLAY_ONLY_SERVICES="backend,redis" go-overlay
+```
+
+### 2) Per-service overrides
+
+Service names are normalized to uppercase tokens (non-alphanumeric chars become `_`).
+
+- `GO_OVERLAY_ENABLE_<SERVICE_TOKEN>=true|false`
+- `GO_OVERLAY_DISABLE_<SERVICE_TOKEN>=true|false`
+
+Examples:
+
+```bash
+# service name: "fastapi-backend" -> token: FASTAPI_BACKEND
+GO_OVERLAY_ENABLE_FASTAPI_BACKEND=true go-overlay
+
+# service name: "caddy-frontend" -> token: CADDY_FRONTEND
+GO_OVERLAY_DISABLE_CADDY_FRONTEND=true go-overlay
+```
+
+Precedence order:
+1. `enabled` from TOML
+2. `GO_OVERLAY_ONLY_SERVICES`
+3. `GO_OVERLAY_ENABLE_*`
+4. `GO_OVERLAY_DISABLE_*` (final override)
+
+If an enabled service depends on a disabled one, startup fails early with a validation error.
+
 ## Configuration (`services.toml`)
 
 `go-overlay` uses a `services.toml` file to define the services it should manage.

@@ -2,8 +2,8 @@
 go = "1.24"
 python = "3.12"
 
-[settings]
-python_venv_auto_create = true
+[settings.python]
+uv_venv_auto = "create|source"
 
 # =============================================================================
 # CI/CD Tasks - Centralized Pipeline Configuration

@@ -107,7 +107,7 @@ def _analyze_security_reports(reports_dir: Path) -> bool:
 def build(c):
     """Build the binary for the local OS."""
     print(f"Building {GO_ENV['BINARY_NAME']}...")
-    _run(c, f"{GO_ENV['GOBUILD']} -o {GO_ENV['BINARY_NAME']} -v .")
+    _run(c, f"{GO_ENV['GOBUILD']} -o {GO_ENV['BINARY_NAME']} -v ./cmd/go-overlay")
 
 
 @task
@@ -116,7 +116,7 @@ def build_linux(c):
     print("Building for Linux...")
     env = os.environ.copy()
     env.update({"CGO_ENABLED": "0", "GOOS": "linux"})
-    _run(c, f"{GO_ENV['GOBUILD']} -o {GO_ENV['BINARY_UNIX']} -v .", env=env)
+    _run(c, f"{GO_ENV['GOBUILD']} -o {GO_ENV['BINARY_UNIX']} -v ./cmd/go-overlay", env=env)
 
 
 @task

@@ -1,4 +1,3 @@
-// go:build integration
 //go:build integration
 // +build integration
 
@@ -13,7 +12,6 @@ import (
 	"time"
 )
 
-// Integration test helper: create a temporary TOML config file
 func createTempConfig(t *testing.T, content string) string {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "services.toml")
@@ -26,7 +24,6 @@ func createTempConfig(t *testing.T, content string) string {
 	return configPath
 }
 
-// Integration test for loading and validating a complete config
 func TestIntegrationLoadValidConfig(t *testing.T) {
 	configContent := `
 [timeouts]
@@ -71,23 +68,19 @@ wait_after = 2
 		t.Errorf("validateConfig() failed: %v", err)
 	}
 
-	// Verify timeouts were set
 	if config.Timeouts.PostScript != 5 {
 		t.Errorf("PostScript timeout = %v, want 5", config.Timeouts.PostScript)
 	}
 
-	// Verify services were loaded
 	if len(config.Services) != 2 {
 		t.Errorf("Number of services = %v, want 2", len(config.Services))
 	}
 
-	// Verify dependencies
 	if len(config.Services[1].DependsOn) != 1 {
 		t.Errorf("Service 2 dependencies = %v, want 1", len(config.Services[1].DependsOn))
 	}
 }
 
-// Integration test for complex dependency configuration
 func TestIntegrationComplexDependencies(t *testing.T) {
 	configContent := `
 [[services]]
@@ -132,7 +125,6 @@ wait_after = 2
 		t.Fatalf("Failed to decode config: %v", err)
 	}
 
-	// Verify API service has correct dependencies before validation
 	var apiService Service
 	for _, s := range config.Services {
 		if s.Name == "api" {
@@ -144,7 +136,6 @@ wait_after = 2
 		t.Errorf("API service dependencies = %v, want 2", len(apiService.DependsOn))
 	}
 
-	// Verify per-dependency wait times
 	if !apiService.WaitAfter.IsPerDep {
 		t.Error("API service should have per-dependency wait times")
 	}
@@ -158,7 +149,6 @@ wait_after = 2
 	}
 }
 
-// Integration test for invalid configurations
 func TestIntegrationInvalidConfigurations(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -243,17 +233,14 @@ command = "/bin/echo"
 	}
 }
 
-// Integration test for service lifecycle
 func TestIntegrationServiceLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	// Initialize shutdown context for the test
 	shutdownCtx, shutdownCancel = context.WithCancel(context.Background())
 	defer shutdownCancel()
 
-	// Create a simple service that exits quickly
 	service := Service{
 		Name:    "test-service",
 		Command: "/bin/echo",
@@ -266,7 +253,6 @@ func TestIntegrationServiceLifecycle(t *testing.T) {
 		Config: service,
 	}
 
-	// Test state transitions
 	serviceProc.SetState(ServiceStateStarting)
 	if serviceProc.GetState() != ServiceStateStarting {
 		t.Errorf("State = %v, want %v", serviceProc.GetState(), ServiceStateStarting)
@@ -288,7 +274,6 @@ func TestIntegrationServiceLifecycle(t *testing.T) {
 	}
 }
 
-// Integration test for pre-script execution
 func TestIntegrationPreScript(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -298,25 +283,21 @@ func TestIntegrationPreScript(t *testing.T) {
 	scriptPath := filepath.Join(tmpDir, "pre-script.sh")
 	markerPath := filepath.Join(tmpDir, "marker.txt")
 
-	// Create a pre-script that creates a marker file
 	scriptContent := "#!/bin/sh\necho 'pre-script executed' > " + markerPath + "\n"
 	err := os.WriteFile(scriptPath, []byte(scriptContent), 0o755)
 	if err != nil {
 		t.Fatalf("Failed to create pre-script: %v", err)
 	}
 
-	// Execute the script
 	err = runScript(scriptPath)
 	if err != nil {
 		t.Errorf("runScript() failed: %v", err)
 	}
 
-	// Verify marker file was created
 	if _, err := os.Stat(markerPath); os.IsNotExist(err) {
 		t.Error("Pre-script did not create marker file")
 	}
 
-	// Verify content
 	content, err := os.ReadFile(markerPath)
 	if err != nil {
 		t.Fatalf("Failed to read marker file: %v", err)
@@ -328,7 +309,6 @@ func TestIntegrationPreScript(t *testing.T) {
 	}
 }
 
-// Integration test for timeout configurations
 func TestIntegrationTimeouts(t *testing.T) {
 	config := &Config{
 		Services: []Service{
@@ -347,7 +327,6 @@ func TestIntegrationTimeouts(t *testing.T) {
 		t.Errorf("validateConfig() failed: %v", err)
 	}
 
-	// Verify custom timeouts were preserved
 	if config.Timeouts.PostScript != 3 {
 		t.Errorf("PostScript timeout = %v, want 3", config.Timeouts.PostScript)
 	}
@@ -356,9 +335,7 @@ func TestIntegrationTimeouts(t *testing.T) {
 	}
 }
 
-// Integration test for wait_after with dependencies
 func TestIntegrationWaitAfterDependencies(t *testing.T) {
-	// Initialize shutdown context
 	shutdownCtx, shutdownCancel = context.WithCancel(context.Background())
 	defer shutdownCancel()
 
@@ -366,12 +343,10 @@ func TestIntegrationWaitAfterDependencies(t *testing.T) {
 	failedServices := make(map[string]bool)
 	var mu sync.Mutex
 
-	// Mark a service as started
 	mu.Lock()
 	startedServices["dep-service"] = true
 	mu.Unlock()
 
-	// Test waiting for dependency with wait_after
 	done := make(chan bool)
 	go func() {
 		result := waitForDependency("dep-service", 1, &mu, startedServices, failedServices, 10)
@@ -388,7 +363,6 @@ func TestIntegrationWaitAfterDependencies(t *testing.T) {
 	}
 }
 
-// Integration test for disabled services
 func TestIntegrationDisabledServices(t *testing.T) {
 	enabledTrue := true
 	enabledFalse := false
@@ -413,7 +387,6 @@ func TestIntegrationDisabledServices(t *testing.T) {
 		t.Errorf("validateConfig() failed: %v", err)
 	}
 
-	// Count enabled services
 	enabledCount := 0
 	for _, service := range config.Services {
 		if service.Enabled != nil && *service.Enabled {
@@ -426,12 +399,10 @@ func TestIntegrationDisabledServices(t *testing.T) {
 	}
 }
 
-// Integration test for service with log file configuration
 func TestIntegrationLogFileService(t *testing.T) {
 	tmpDir := t.TempDir()
 	logFile := filepath.Join(tmpDir, "service.log")
 
-	// Create log directory
 	err := os.MkdirAll(tmpDir, 0o755)
 	if err != nil {
 		t.Fatalf("Failed to create log directory: %v", err)
@@ -449,7 +420,6 @@ func TestIntegrationLogFileService(t *testing.T) {
 	}
 }
 
-// Integration test for user field validation
 func TestIntegrationUserValidation(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("Skipping user validation test (requires root)")
@@ -493,7 +463,6 @@ func TestIntegrationUserValidation(t *testing.T) {
 	}
 }
 
-// Integration test for required services
 func TestIntegrationRequiredServices(t *testing.T) {
 	config := &Config{
 		Services: []Service{
@@ -515,7 +484,6 @@ func TestIntegrationRequiredServices(t *testing.T) {
 		t.Errorf("validateConfig() failed: %v", err)
 	}
 
-	// Verify required flag is preserved
 	if !config.Services[0].Required {
 		t.Error("First service should be required")
 	}
@@ -524,7 +492,6 @@ func TestIntegrationRequiredServices(t *testing.T) {
 	}
 }
 
-// Benchmark for loading and validating config
 func BenchmarkIntegrationLoadConfig(b *testing.B) {
 	configContent := `
 [[services]]

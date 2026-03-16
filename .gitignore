@@ -33,9 +33,9 @@ docker-compose.override.yml
 .env.*
 
 # Binaries
-go-overlay
-go-overlay_unix
-go-overlay-linux-*
+/go-overlay
+/go-overlay_unix
+/go-overlay-linux-*
 
 # CI/CD artifacts
 dist/

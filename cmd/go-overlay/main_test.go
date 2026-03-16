@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-// Test ServiceState String method
 func TestServiceStateString(t *testing.T) {
 	tests := []struct {
 		state    ServiceState
@@ -34,7 +33,6 @@ func TestServiceStateString(t *testing.T) {
 	}
 }
 
-// Test getStateColor function
 func TestGetStateColor(t *testing.T) {
 	tests := []struct {
 		state    ServiceState
@@ -58,7 +56,6 @@ func TestGetStateColor(t *testing.T) {
 	}
 }
 
-// Test colorize function
 func TestColorize(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -80,7 +77,6 @@ func TestColorize(t *testing.T) {
 	}
 }
 
-// Test DependsOnField UnmarshalTOML
 func TestDependsOnFieldUnmarshalTOML(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -145,7 +141,6 @@ func TestDependsOnFieldUnmarshalTOML(t *testing.T) {
 	}
 }
 
-// Test WaitAfterField UnmarshalTOML
 func TestWaitAfterFieldUnmarshalTOML(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -213,7 +208,6 @@ func TestWaitAfterFieldUnmarshalTOML(t *testing.T) {
 	}
 }
 
-// Test WaitAfterField GetWaitTime
 func TestWaitAfterFieldGetWaitTime(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -277,7 +271,6 @@ func TestWaitForDependencyFailed(t *testing.T) {
 	}
 }
 
-// Test validateService
 func TestValidateService(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -349,8 +342,10 @@ func TestValidateService(t *testing.T) {
 	}
 }
 
-// Test validateDependencies
 func TestValidateDependencies(t *testing.T) {
+	enabled := true
+	disabled := false
+
 	tests := []struct {
 		name      string
 		services  []Service
@@ -411,6 +406,14 @@ func TestValidateDependencies(t *testing.T) {
 			},
 			shouldErr: true,
 		},
+		{
+			name: "Enabled service depends on disabled service",
+			services: []Service{
+				{Name: "service1", Command: "/bin/echo", Enabled: &disabled},
+				{Name: "service2", Command: "/bin/echo", Enabled: &enabled, DependsOn: []string{"service1"}},
+			},
+			shouldErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -428,7 +431,6 @@ func TestValidateDependencies(t *testing.T) {
 	}
 }
 
-// Test hasCycles
 func TestHasCycles(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -479,7 +481,6 @@ func TestHasCycles(t *testing.T) {
 	}
 }
 
-// Test getLongestServiceNameLength
 func TestGetLongestServiceNameLength(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -518,7 +519,6 @@ func TestGetLongestServiceNameLength(t *testing.T) {
 	}
 }
 
-// Test formatServiceName
 func TestFormatServiceName(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -555,7 +555,6 @@ func TestFormatServiceName(t *testing.T) {
 	}
 }
 
-// Test joinArgs
 func TestJoinArgs(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -588,7 +587,6 @@ func TestJoinArgs(t *testing.T) {
 	}
 }
 
-// Test ValidationError
 func TestValidationError(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -623,33 +621,26 @@ func TestValidationError(t *testing.T) {
 	}
 }
 
-// Test ServiceProcess state management
 func TestServiceProcessSetGetState(t *testing.T) {
 	sp := &ServiceProcess{
 		Name: "test-service",
 	}
 
-	// Test initial state
 	sp.SetState(ServiceStatePending)
 	if got := sp.GetState(); got != ServiceStatePending {
 		t.Errorf("GetState() = %v, want %v", got, ServiceStatePending)
 	}
 
-	// Test state transition
 	sp.SetState(ServiceStateRunning)
 	if got := sp.GetState(); got != ServiceStateRunning {
 		t.Errorf("GetState() = %v, want %v", got, ServiceStateRunning)
 	}
 }
 
-// Test isBashAvailable
 func TestIsBashAvailable(_ *testing.T) {
-	// This test is environment-dependent
-	// Just ensure it doesn't panic
 	_ = isBashAvailable()
 }
 
-// Test validateConfig with default timeouts
 func TestValidateConfigDefaults(t *testing.T) {
 	config := &Config{
 		Services: []Service{
@@ -665,7 +656,6 @@ func TestValidateConfigDefaults(t *testing.T) {
 		t.Errorf("validateConfig() error = %v, want nil", err)
 	}
 
-	// Check default timeouts
 	if config.Timeouts.PostScript != 7 {
 		t.Errorf("Default PostScript timeout = %v, want 7", config.Timeouts.PostScript)
 	}
@@ -680,7 +670,83 @@ func TestValidateConfigDefaults(t *testing.T) {
 	}
 }
 
-// Benchmark tests
+func TestApplyServiceEnvOverrides(t *testing.T) {
+	t.Setenv(envOnlyServices, "backend")
+	t.Setenv("GO_OVERLAY_ENABLE_FRONTEND", "true")
+	t.Setenv("GO_OVERLAY_DISABLE_CACHE", "true")
+
+	enabled := true
+	config := &Config{
+		Services: []Service{
+			{Name: "backend", Command: "/bin/echo", Enabled: &enabled},
+			{Name: "frontend", Command: "/bin/echo", Enabled: &enabled},
+			{Name: "cache", Command: "/bin/echo", Enabled: &enabled},
+		},
+	}
+
+	applyServiceEnvOverrides(config)
+
+	if !isServiceEnabled(config.Services[0]) {
+		t.Error("backend should be enabled by GO_OVERLAY_ONLY_SERVICES")
+	}
+	if !isServiceEnabled(config.Services[1]) {
+		t.Error("frontend should be re-enabled by GO_OVERLAY_ENABLE_FRONTEND")
+	}
+	if isServiceEnabled(config.Services[2]) {
+		t.Error("cache should be disabled by GO_OVERLAY_DISABLE_CACHE")
+	}
+}
+
+func TestValidateConfigOnlyServicesSkipsRuntimeChecksForDisabledServices(t *testing.T) {
+	t.Setenv(envOnlyServices, "backend")
+
+	config := &Config{
+		Services: []Service{
+			{
+				Name:    "frontend",
+				Command: "nonexistent-frontend-binary-xyz",
+			},
+			{
+				Name:    "backend",
+				Command: "/bin/echo",
+			},
+		},
+	}
+
+	if err := validateConfig(config); err != nil {
+		t.Fatalf("validateConfig() returned unexpected error: %v", err)
+	}
+
+	if isServiceEnabled(config.Services[0]) {
+		t.Error("frontend should be disabled by GO_OVERLAY_ONLY_SERVICES")
+	}
+	if !isServiceEnabled(config.Services[1]) {
+		t.Error("backend should be enabled by GO_OVERLAY_ONLY_SERVICES")
+	}
+}
+
+func TestParseBoolEnv(t *testing.T) {
+	trueVals := []string{"1", "true", "TRUE", "yes", "on", "y"}
+	for _, v := range trueVals {
+		parsed, ok := parseBoolEnv(v)
+		if !ok || !parsed {
+			t.Errorf("parseBoolEnv(%q) = (%v,%v), want (true,true)", v, parsed, ok)
+		}
+	}
+
+	falseVals := []string{"0", "false", "FALSE", "no", "off", "n"}
+	for _, v := range falseVals {
+		parsed, ok := parseBoolEnv(v)
+		if !ok || parsed {
+			t.Errorf("parseBoolEnv(%q) = (%v,%v), want (false,true)", v, parsed, ok)
+		}
+	}
+
+	if _, ok := parseBoolEnv("invalid"); ok {
+		t.Error("parseBoolEnv('invalid') should return ok=false")
+	}
+}
+
 func BenchmarkGetStateColor(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		getStateColor(ServiceStateRunning)
@@ -703,30 +769,23 @@ func BenchmarkValidateService(b *testing.B) {
 	}
 }
 
-// Test ServiceProcess GetPID
 func TestServiceProcessGetPID(t *testing.T) {
 	sp := &ServiceProcess{
 		Name:    "test-service",
 		Process: nil,
 	}
 
-	// Test with nil process
 	if pid := sp.GetPID(); pid != 0 {
 		t.Errorf("GetPID() with nil process = %v, want 0", pid)
 	}
 }
 
-// Test ServiceProcess SetError
 func TestServiceProcessSetError(t *testing.T) {
 	sp := &ServiceProcess{
 		Name: "test-service",
 	}
 
-	// Test setting error
 	testErr := os.ErrNotExist
-
-	// Note: SetError() will print an error message to stdout
-	// This is expected behavior and not a test failure
 	sp.SetError(testErr)
 
 	if !errors.Is(sp.LastError, testErr) {
@@ -738,14 +797,12 @@ func TestServiceProcessSetError(t *testing.T) {
 	}
 }
 
-// Test that version is set
 func TestVersionSet(t *testing.T) {
 	if version == "" {
 		t.Error("version should not be empty")
 	}
 }
 
-// Test parseConfig with various TOML formats
 func TestParseConfig(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -887,7 +944,6 @@ dep2 = 20
 	}
 }
 
-// Test socket path constant
 func TestSocketPath(t *testing.T) {
 	expected := "/tmp/go-overlay.sock"
 	if socketPath != expected {
@@ -895,9 +951,7 @@ func TestSocketPath(t *testing.T) {
 	}
 }
 
-// Mock test for IPC structures
 func TestIPCStructures(t *testing.T) {
-	// Test IPCCommand
 	cmd := IPCCommand{
 		Type:        CmdListServices,
 		ServiceName: "test-service",
@@ -909,7 +963,6 @@ func TestIPCStructures(t *testing.T) {
 		t.Errorf("IPCCommand.ServiceName = %v, want %v", cmd.ServiceName, "test-service")
 	}
 
-	// Test ServiceInfo
 	info := ServiceInfo{
 		Name:      "test",
 		State:     ServiceStateRunning,
@@ -922,7 +975,6 @@ func TestIPCStructures(t *testing.T) {
 		t.Errorf("ServiceInfo.Name = %v, want %v", info.Name, "test")
 	}
 
-	// Test IPCResponse
 	resp := IPCResponse{
 		Success:  true,
 		Message:  "OK",
@@ -939,7 +991,6 @@ func TestIPCStructures(t *testing.T) {
 	}
 }
 
-// Test ValidationErrors
 func TestValidationErrors(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -977,7 +1028,6 @@ func TestValidationErrors(t *testing.T) {
 	}
 }
 
-// Test CommandType constants
 func TestCommandTypeConstants(t *testing.T) {
 	if CmdListServices != "list_services" {
 		t.Errorf("CmdListServices = %v, want list_services", CmdListServices)
@@ -990,13 +1040,7 @@ func TestCommandTypeConstants(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// Tests for new features: Health Check, Restart Policy, Environment Variables
-// =============================================================================
-
-// Test loadEnvFile
 func TestLoadEnvFile(t *testing.T) {
-	// Create a temp env file
 	tmpDir := t.TempDir()
 	envFile := tmpDir + "/test.env"
 
@@ -1037,7 +1081,6 @@ DEBUG=true
 	}
 }
 
-// Test loadEnvFile with non-existent file
 func TestLoadEnvFileNotFound(t *testing.T) {
 	_, err := loadEnvFile("/non/existent/file.env")
 	if err == nil {
@@ -1045,7 +1088,6 @@ func TestLoadEnvFileNotFound(t *testing.T) {
 	}
 }
 
-// Test buildServiceEnv
 func TestBuildServiceEnv(t *testing.T) {
 	service := Service{
 		Name:    "test-service",
@@ -1058,7 +1100,6 @@ func TestBuildServiceEnv(t *testing.T) {
 
 	env := buildServiceEnv(service)
 
-	// Check that our custom vars are present
 	found := false
 	for _, e := range env {
 		if strings.HasPrefix(e, "MY_VAR=") {
@@ -1074,7 +1115,6 @@ func TestBuildServiceEnv(t *testing.T) {
 	}
 }
 
-// Test validateHealthCheck
 func TestValidateHealthCheck(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1150,7 +1190,6 @@ func TestValidateHealthCheck(t *testing.T) {
 	}
 }
 
-// Test validateRestartPolicy
 func TestValidateRestartPolicy(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1247,9 +1286,7 @@ func TestValidateRestartPolicy(t *testing.T) {
 	}
 }
 
-// Test validateEnvFile
 func TestValidateEnvFile(t *testing.T) {
-	// Create a temp file for the valid case
 	tmpDir := t.TempDir()
 	validEnvFile := tmpDir + "/valid.env"
 	os.WriteFile(validEnvFile, []byte("KEY=value"), 0644)
@@ -1300,7 +1337,6 @@ func TestValidateEnvFile(t *testing.T) {
 	}
 }
 
-// Test applyHealthCheckDefaults
 func TestApplyHealthCheckDefaults(t *testing.T) {
 	hc := &HealthCheckConfig{}
 	applyHealthCheckDefaults(hc)
@@ -1318,7 +1354,6 @@ func TestApplyHealthCheckDefaults(t *testing.T) {
 		t.Errorf("Default StartDelay = %d, want 10", hc.StartDelay)
 	}
 
-	// Test that existing values are preserved
 	hc2 := &HealthCheckConfig{
 		Interval:   60,
 		Retries:    5,
@@ -1332,7 +1367,6 @@ func TestApplyHealthCheckDefaults(t *testing.T) {
 	}
 }
 
-// Test formatMaxRestarts
 func TestFormatMaxRestarts(t *testing.T) {
 	tests := []struct {
 		max      int
@@ -1351,7 +1385,6 @@ func TestFormatMaxRestarts(t *testing.T) {
 	}
 }
 
-// Test RestartPolicy constants
 func TestRestartPolicyConstants(t *testing.T) {
 	if RestartNever != "never" {
 		t.Errorf("RestartNever = %v, want never", RestartNever)
@@ -1364,7 +1397,6 @@ func TestRestartPolicyConstants(t *testing.T) {
 	}
 }
 
-// Test parseConfig with new fields
 func TestParseConfigNewFields(t *testing.T) {
 	tomlContent := `
 [[services]]
@@ -1394,7 +1426,6 @@ KEY2 = "value2"
 
 	svc := config.Services[0]
 
-	// Check restart policy
 	if svc.Restart != RestartOnFailure {
 		t.Errorf("Restart = %v, want %v", svc.Restart, RestartOnFailure)
 	}
@@ -1405,7 +1436,6 @@ KEY2 = "value2"
 		t.Errorf("MaxRestarts = %v, want 3", svc.MaxRestarts)
 	}
 
-	// Check health check
 	if svc.HealthCheck == nil {
 		t.Fatal("HealthCheck should not be nil")
 	}
@@ -1416,7 +1446,6 @@ KEY2 = "value2"
 		t.Errorf("HealthCheck.Interval = %v, want 30", svc.HealthCheck.Interval)
 	}
 
-	// Check env vars
 	if len(svc.Env) != 2 {
 		t.Errorf("Env length = %v, want 2", len(svc.Env))
 	}
@@ -1425,20 +1454,16 @@ KEY2 = "value2"
 	}
 }
 
-// Test checkCommandHealth
 func TestCheckCommandHealth(t *testing.T) {
-	// Test successful command
 	if !checkCommandHealth("exit 0", 5) {
 		t.Error("checkCommandHealth('exit 0') should return true")
 	}
 
-	// Test failing command
 	if checkCommandHealth("exit 1", 5) {
 		t.Error("checkCommandHealth('exit 1') should return false")
 	}
 }
 
-// Benchmark for buildServiceEnv
 func BenchmarkBuildServiceEnv(b *testing.B) {
 	service := Service{
 		Name:    "test-service",
@@ -1456,7 +1481,6 @@ func BenchmarkBuildServiceEnv(b *testing.B) {
 	}
 }
 
-// Benchmark for validateHealthCheck
 func BenchmarkValidateHealthCheck(b *testing.B) {
 	service := Service{
 		Name:    "test",
